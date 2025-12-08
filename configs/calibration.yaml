@@ -1,0 +1,17 @@
+pattern_cols: 10 #棋盘格列数
+pattern_rows: 7 #棋盘格行数
+center_distance_mm: 19.25 #棋盘格角点间距，单位mm
+
+R_gimbal2imubody: [1, 0, 0, 0, 1, 0,  0, 0, 1]
+
+camera_name: "hikrobot"
+exposure_ms: 2
+gain: 16.0
+vid_pid: "2bdf:0001"
+
+#####-----cboard参数-----#####
+#quaternion_canid: 0x01
+#bullet_speed_canid: 0x110
+#send_canid: 0xff
+#can_interface: "can0"
+com_port: "/dev/gimbal"
