@@ -1,11 +1,9 @@
-%YAML:1.0
-
 # ----- 标定板参数 -----
 pattern_cols: 10
 pattern_rows: 7
-center_distance_mm: 40
+center_distance_mm: 19.25
 
-R_gimbal2imubody: [1, 0, 0, 0, 1, 0,  0, 0, 1]
+R_gimbal2imubody: [0, 1, 0, 1, 0, 0, 0, 0, -1]
 
 # ----- 关键参数2: 相机内参 (填你算出来的) -----
 camera_matrix: [3675.6262082469548, 0, 1518.9326665239796, 0, 3673.4179037120011, 1025.3788910396063, 0, 0, 1]

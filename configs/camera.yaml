@@ -7,3 +7,9 @@ camera_name: "hikrobot"
 exposure_ms: 3
 gain: 10.0
 vid_pid: "2bdf:0001"
+
+# 相机旋转矩阵 (理想正装: 相机Z轴=云台X轴, 相机X轴=云台-Y轴, 相机Y轴=云台-Z轴)
+R_camera2gimbal: [0, 0, 1, -1, 0, 0, 0, -1, 0]
+
+# 相机平移向量 (云台坐标系下: x=0, y=0.05米, z=0)
+t_camera2gimbal: [0, 0.05, 0]
