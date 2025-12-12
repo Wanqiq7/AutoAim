@@ -5,7 +5,7 @@
 #include <opencv2/opencv.hpp>
 
 #include "io/camera.hpp"
-#include "io/cboard.hpp"
+#include "io/gimbal/gimbal.hpp"
 #include "tasks/auto_aim/aimer.hpp"
 #include "tasks/auto_aim/multithread/commandgener.hpp"
 #include "tasks/auto_aim/multithread/mt_detector.hpp"
@@ -39,7 +39,7 @@ int main(int argc, char * argv[])
   tools::Plotter plotter;
   tools::Recorder recorder(100);  //根据实际帧率调整
 
-  io::CBoard cboard(config_path);
+  io::Gimbal gimbal(config_path);
   io::Camera camera(config_path);
 
   auto_aim::multithread::MultiThreadDetector detector(config_path, true);
@@ -47,7 +47,7 @@ int main(int argc, char * argv[])
   auto_aim::Tracker tracker(config_path, solver);
   auto_aim::Aimer aimer(config_path);
   auto_aim::Shooter shooter(config_path);
-  auto_aim::multithread::CommandGener commandgener(shooter, aimer, cboard, plotter, true);
+  auto_aim::multithread::CommandGener commandgener(shooter, aimer, gimbal, plotter, true);
 
   auto detect_thread = std::thread([&]() {
     cv::Mat img;
@@ -59,20 +59,22 @@ int main(int argc, char * argv[])
     }
   });
 
-  auto mode = io::Mode::idle;
-  auto last_mode = io::Mode::idle;
+  auto mode = gimbal.mode();
+  auto last_mode = mode;
 
   while (!exiter.exit()) {
     auto t0 = std::chrono::steady_clock::now();
     /// 自瞄核心逻辑
     auto [img, armors, t] = detector.debug_pop();
-    Eigen::Quaterniond q = cboard.imu_at(t - 1ms);
-    mode = cboard.mode;
+    Eigen::Quaterniond q = gimbal.q(t);
+    mode = gimbal.mode();
 
     if (last_mode != mode) {
-      tools::logger()->info("Switch to {}", io::MODES[mode]);
+      tools::logger()->info("Switch to {}", gimbal.str(mode));
       last_mode = mode;
     }
+
+    auto state = gimbal.state();
 
     solver.set_R_gimbal2world(q);
 
@@ -80,7 +82,7 @@ int main(int argc, char * argv[])
 
     auto targets = tracker.track(armors, t);
 
-    commandgener.push(targets, t, cboard.bullet_speed, ypr);  // 发送给决策线程
+    commandgener.push(targets, t, state.bullet_speed, ypr);  // 发送给决策线程
 
     /// debug
     tools::draw_text(img, fmt::format("[{}]", tracker.state()), {10, 30}, {255, 255, 255});
@@ -157,7 +159,7 @@ int main(int argc, char * argv[])
     // 云台响应情况
     data["gimbal_yaw"] = ypr[0] * 57.3;
     data["gimbal_pitch"] = ypr[1] * 57.3;
-    data["bullet_speed"] = cboard.bullet_speed;
+    data["bullet_speed"] = state.bullet_speed;
 
     plotter.plot(data);
 

@@ -2,8 +2,9 @@
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
 #include <thread>
+#include <cmath>
 
-#include "io/cboard.hpp"
+#include "io/gimbal/gimbal.hpp"
 #include "io/command.hpp"
 #include "tools/exiter.hpp"
 #include "tools/logger.hpp"
@@ -14,26 +15,23 @@ using namespace std::chrono_literals;
 
 const std::string keys =
   "{help h usage ? |                     | 输出命令行参数说明}"
-  "{delta-angle a  |          8          | yaw轴delta角}"
+  "{delta-angle a  |          30         | yaw轴delta角 (单位:度)}"
   "{circle      c  |         0.2         | delta_angle的切片数}"
   "{signal-mode m  |     triangle_wave   | 发送信号的模式}"
   "{axis        x  |         yaw         | 发送信号的轴}"
   "{@config-path   | configs/sentry.yaml | 位置参数，yaml配置文件路径 }";
 
-double yaw_cal(double t)
-{
-  double A = 7;
-  double T = 4;  // s
-
-  return A * std::sin(2 * M_PI * t / T);  // 31是云台yaw初始角度，单位为度
+// 这里的返回值直接理解为“度”
+double yaw_cal(double t) {
+  double A = 15; // 振幅改为30度，方便观察
+  double T = 4;  // 周期 4 秒
+  return A * std::sin(2 * M_PI * t / T); 
 }
 
-double pitch_cal(double t)
-{
-  double A = 7;
-  double T = 4;  // s
-
-  return A * std::sin(2 * M_PI * t / T + M_PI / 2) + 18;  // 18是云台pitch初始角度，单位为度
+double pitch_cal(double t) {
+  double A = 5;
+  double T = 4;  
+  return A * std::sin(2 * M_PI * t / T + M_PI / 2) + 18; 
 }
 
 int main(int argc, char * argv[])
@@ -51,115 +49,94 @@ int main(int argc, char * argv[])
 
   tools::Exiter exiter;
   tools::Plotter plotter;
-
-  io::CBoard cboard(config_path);
+  io::Gimbal gimbal(config_path);
 
   auto init_angle = 0;
-  double slice = circle * 100;  //切片数=周期*帧率
+  double slice = circle * 100;
   auto dangle = delta_angle / slice;
   double cmd_angle = init_angle;
+  int axis_index = axis == "yaw" ? 0 : 1;
 
-  int axis_index = axis == "yaw" ? 0 : 1;  // 0 for yaw, 1 for pitch
-
-  double error = 0;
-  int count = 0;
-
-  io::Command init_command{1, 0, 0, 0};
-  cboard.send(init_command);
-  std::this_thread::sleep_for(5s);  //等待云台归零
+  std::cout << "Waiting for gimbal to center (5s)..." << std::endl;
+  auto start_wait = std::chrono::steady_clock::now();
+  while(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start_wait).count() < 5) {
+      if(exiter.exit()) return 0;
+      gimbal.send(true, false, 0, 0, 0, 0, 0, 0); 
+      std::this_thread::sleep_for(10ms); 
+  }
+  std::cout << "Test started! Sending DEGREE units." << std::endl;
 
   io::Command command{0};
   io::Command last_command{0};
 
   double t = 0;
-  auto last_t = t;
-  double dt = 0.005;  // 5ms, 模拟200fps
-
   auto t0 = std::chrono::steady_clock::now();
+  int count = 0;
 
   while (!exiter.exit()) {
     nlohmann::json data;
     auto timestamp = std::chrono::steady_clock::now();
 
-    std::this_thread::sleep_for(1ms);
-
-    Eigen::Quaterniond q = cboard.imu_at(timestamp);
-
+    Eigen::Quaterniond q = gimbal.q(timestamp);
     Eigen::Vector3d eulers = tools::eulers(q, 2, 1, 0);
 
+    // 计算当前云台的反馈角度（将弧度转为度，用于绘图对比）
+    double gimbal_yaw_deg = eulers[0] * 57.29578;
+    double gimbal_pitch_deg = eulers[1] * 57.29578;
+
     if (signal_mode == "triangle_wave") {
-      if (count == slice) {
+      if (count >= slice) {
         cmd_angle = init_angle;
-        command = {1, 0, 0, 0};
-        if (axis_index == 0)
-          command.yaw = cmd_angle / 57.3;
-        else
-          command.pitch = cmd_angle / 57.3;
-        count = 0;
-
-      } else {
-        cmd_angle += dangle;
-        if (axis_index == 0)
-          command.yaw = cmd_angle / 57.3;
-        else
-          command.pitch = cmd_angle / 57.3;
-        count++;
-      }
-
-      cboard.send(command);
-      if (axis_index == 0) {
-        data["cmd_yaw"] = command.yaw * 57.3;
-        data["last_cmd_yaw"] = last_command.yaw * 57.3;
-        data["gimbal_yaw"] = eulers[0] * 57.3;
-      } else {
-        data["cmd_pitch"] = command.pitch * 57.3;
-        data["last_cmd_pitch"] = last_command.pitch * 57.3;
-        data["gimbal_pitch"] = eulers[1] * 57.3;
-      }
-      data["t"] = tools::delta_time(std::chrono::steady_clock::now(), t0);
-      last_command = command;
-      plotter.plot(data);
-      std::this_thread::sleep_for(8ms);  //模拟自瞄100fps
-    }
-
-    else if (signal_mode == "step") {
-      if (count == 300) {
-        cmd_angle += delta_angle;
+        dangle = -dangle; 
         count = 0;
       }
-      command = {1, 0, tools::limit_rad(cmd_angle / 57.3), 0};
+      
+      cmd_angle += dangle;
+      
+      // 【修改点 1】直接赋值，不再除以 57.3
+      if (axis_index == 0) command.yaw = cmd_angle;
+      else command.pitch = cmd_angle;
       count++;
+      
+      command.control = true;
+      gimbal.send(command.control, command.shoot, command.yaw, 0, 0, command.pitch, 0, 0);
 
-      cboard.send(command);
-      data["cmd_yaw"] = command.yaw * 57.3;
-      data["last_cmd_yaw"] = last_command.yaw * 57.3;
-      data["gimbal_yaw"] = eulers[0] * 57.3;
-      last_command = command;
-      plotter.plot(data);
-      std::this_thread::sleep_for(8ms);  //模拟自瞄100fps
-    }
-
-    else if (signal_mode == "circle") {
-      std::cout << "t: " << t << std::endl;
-      command.yaw = yaw_cal(t) / 57.3;
-      command.pitch = pitch_cal(t) / 57.3;
-      command.control = 1;
-      command.shoot = 0;
-      t += dt;
-      if (t - last_t > 2) {
-        t += 2.4;
-        last_t = t;
+      // 【修改点 2】绘图时 cmd_yaw 不再乘以 57.3，因为它已经是度了
+      if (axis_index == 0) {
+        data["cmd_yaw"] = command.yaw; 
+        data["gimbal_yaw"] = gimbal_yaw_deg;
+      } else {
+        data["cmd_pitch"] = command.pitch;
+        data["gimbal_pitch"] = gimbal_pitch_deg;
       }
-      cboard.send(command);
+      
+      data["t"] = tools::delta_time(std::chrono::steady_clock::now(), t0);
+      plotter.plot(data);
+      std::this_thread::sleep_for(10ms);
+    }
+    else if (signal_mode == "circle") { 
+      t = tools::delta_time(std::chrono::steady_clock::now(), t0);
+      
+      // 【修改点 1】直接赋值，不再除以 57.3
+      command.yaw = yaw_cal(t);
+      command.pitch = pitch_cal(t);
+      command.control = true;
+      
+      gimbal.send(command.control, command.shoot, command.yaw, 0, 0, command.pitch, 0, 0);
 
       data["t"] = t;
-      data["cmd_yaw"] = command.yaw * 57.3;
-      data["cmd_pitch"] = command.pitch * 57.3;
-      data["gimbal_yaw"] = eulers[0] * 57.3;
-      data["gimbal_pitch"] = eulers[1] * 57.3;
+      // 【修改点 2】绘图时直接使用 command.yaw
+      data["cmd_yaw"] = command.yaw;
+      data["cmd_pitch"] = command.pitch;
+      // 反馈值依然需要从弧度转为度（因为 IMU 读出来永远是弧度）
+      data["gimbal_yaw"] = gimbal_yaw_deg;
+      data["gimbal_pitch"] = gimbal_pitch_deg;
+      
       plotter.plot(data);
-      std::this_thread::sleep_for(9ms);
+      std::this_thread::sleep_for(10ms);
     }
   }
+  
+  gimbal.send(false, false, 0, 0, 0, 0, 0, 0);
   return 0;
 }

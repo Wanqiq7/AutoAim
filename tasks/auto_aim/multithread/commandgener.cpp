@@ -8,9 +8,9 @@ namespace multithread
 {
 
 CommandGener::CommandGener(
-  auto_aim::Shooter & shooter, auto_aim::Aimer & aimer, io::CBoard & cboard,
+  auto_aim::Shooter & shooter, auto_aim::Aimer & aimer, io::Gimbal & gimbal,
   tools::Plotter & plotter, bool debug)
-: shooter_(shooter), aimer_(aimer), cboard_(cboard), plotter_(plotter), stop_(false), debug_(debug)
+: shooter_(shooter), aimer_(aimer), gimbal_(gimbal), plotter_(plotter), stop_(false), debug_(debug)
 {
   thread_ = std::thread(&CommandGener::generate_command, this);
 }
@@ -48,19 +48,22 @@ void CommandGener::generate_command()
     }
     if (input) {
       auto command = aimer_.aim(input->targets_, input->t, input->bullet_speed);
-      command.shoot = shooter_.shoot(command, aimer_, input->targets_, input->gimbal_pos);
+      // 联调阶段不允许开火，强制关
+      command.shoot = false;
       command.horizon_distance = input->targets_.empty()
                                    ? 0
                                    : std::sqrt(
                                        tools::square(input->targets_.front().ekf_x()[0]) +
                                        tools::square(input->targets_.front().ekf_x()[2]));
-      cboard_.send(command);
+      float yaw_deg = static_cast<float>(command.yaw * 57.2957795);
+      float pitch_deg = static_cast<float>(command.pitch * 57.2957795);
+      gimbal_.send(command.control, false, yaw_deg, 0, 0, pitch_deg, 0, 0);
       if (debug_) {
         nlohmann::json data;
         data["t"] = tools::delta_time(std::chrono::steady_clock::now(), t0);
-        data["cmd_yaw"] = command.yaw * 57.3;
-        data["cmd_pitch"] = command.pitch * 57.3;
-        data["shoot"] = command.shoot;
+        data["cmd_yaw"] = yaw_deg;
+        data["cmd_pitch"] = pitch_deg;
+        data["shoot"] = 0;
         data["horizon_distance"] = command.horizon_distance;
         plotter_.plot(data);
       }
